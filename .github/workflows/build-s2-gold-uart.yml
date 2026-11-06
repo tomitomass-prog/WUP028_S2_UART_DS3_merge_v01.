@@ -1,0 +1,99 @@
+name: WUP-028 ESP32-S2 GOLD baseline and UART
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-parser-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test packet decoder without ESP-IDF
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcc -std=c11 -Wall -Wextra -Werror \
+            -Idiagnostics/s2_gold_uart \
+            tests/test_pad_gc.c -o /tmp/test_pad_gc
+          /tmp/test_pad_gc
+
+  build:
+    needs: native-parser-test
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [usb-only-control, uart]
+    name: build-${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+      - name: Verify files and fetch fixed upstream release
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in main.c bridge.c uart_receiver.c pad_packet.h pad_gc.h; do
+            if [[ ! -f "diagnostics/s2_gold_uart/$file" ]]; then
+              echo "::error::Missing diagnostics/s2_gold_uart/$file"
+              exit 1
+            fi
+          done
+          git clone --quiet --branch v0.9.0 --depth 1 \
+            https://github.com/loopj/usb-gamecube-controller-adapter.git upstream
+          echo "Upstream revision: $(git -C upstream rev-parse HEAD)"
+          test -f upstream/src/usb_descriptors.c
+          test -f upstream/src/report_ids.h
+          test -f upstream/ports/esp32/CMakeLists.txt
+          test -d upstream/ports/esp32/main
+      - name: Install reference USB code and optional UART
+        shell: bash
+        env:
+          BRIDGE_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          SRC=diagnostics/s2_gold_uart
+          DST=upstream/ports/esp32/main
+          cp "$SRC/main.c" "$DST/main.c"
+          cp "$SRC/bridge.c" "$DST/bridge.c"
+          cp "$SRC/uart_receiver.c" "$DST/uart_receiver.c"
+          cp "$SRC/pad_packet.h" "$DST/pad_packet.h"
+          cp "$SRC/pad_gc.h" "$DST/pad_gc.h"
+          cat > "$DST/idf_component.yml" <<'MANIFEST'
+          dependencies:
+            espressif/esp_tinyusb: "^2.0.0"
+          MANIFEST
+          cat > "$DST/CMakeLists.txt" <<'CMAKE'
+          set(GCCA_CORE "${CMAKE_CURRENT_LIST_DIR}/../../../src")
+          idf_component_register(
+            SRCS "main.c" "bridge.c" "${GCCA_CORE}/usb_descriptors.c"
+            INCLUDE_DIRS "." "${GCCA_CORE}"
+            REQUIRES esp_tinyusb driver
+            PRIV_REQUIRES esp_timer
+          )
+          CMAKE
+          if [[ "$BRIDGE_MODE" == "uart" ]]; then
+            sed -i 's/SRCS "main.c" "bridge.c"/SRCS "main.c" "bridge.c" "uart_receiver.c"/' "$DST/CMakeLists.txt"
+            cat >> "$DST/CMakeLists.txt" <<'UARTDEFINE'
+          target_compile_definitions(${COMPONENT_LIB} PRIVATE UART_BRIDGE=1)
+          UARTDEFINE
+          fi
+          echo "Build mode: $BRIDGE_MODE"
+      - name: Build ESP32-S2
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.2
+          target: esp32s2
+          path: upstream/ports/esp32
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: WUP028-S2-${{ matrix.mode }}
+          path: |
+            upstream/ports/esp32/build/*.bin
+            upstream/ports/esp32/build/bootloader/*.bin
+            upstream/ports/esp32/build/partition_table/*.bin
+            upstream/ports/esp32/build/flasher_args.json
+          if-no-files-found: error
