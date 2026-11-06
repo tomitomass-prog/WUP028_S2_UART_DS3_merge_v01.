@@ -3,7 +3,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "pad_packet.h"
-
 /* WUP-028 port: status, low buttons, high buttons, LX, LY, CX, CY, LT, RT. */
 static inline void gc_neutral(uint8_t p[9]) {
     for (int i=0;i<9;i++) p[i]=0;
@@ -26,15 +25,16 @@ static inline void gc_from_pad_packet(const uint8_t f[PAD_PACKET_SIZE], uint8_t 
     if (hat==4 || hat==5 || hat==6) lo|=0x40; /* down */
     if (hat==1 || hat==2 || hat==8) lo|=0x80; /* up */
     if (b & PAD_START) hi|=0x01;
-    if (b & (PAD_ZL|PAD_ZR)) hi|=0x02; /* GC has one Z */
-    if (b & PAD_R) hi|=0x04;
-    if (b & PAD_L) hi|=0x08;
+    /* v0.4: swap L1 with L2 and R1 with R2 in digital GC buttons. */
+    if (b & (PAD_L | PAD_R)) hi|=0x02; /* L1/R1 -> GC Z */
+    if (b & PAD_ZL) hi|=0x08;         /* L2 -> GC L */
+    if (b & PAD_ZR) hi|=0x04;         /* R2 -> GC R */
     p[1]=lo; p[2]=hi;
     p[3]=gc_axis((int8_t)f[6]); /* left stick horizontal unchanged */
     /* Invert left Y only; clamp -128 to 255 instead of wrapping to zero. */
     int ly_inv = 128 - (int8_t)f[7];
     p[4]=(uint8_t)(ly_inv > 255 ? 255 : ly_inv);
     p[5]=gc_axis((int8_t)f[8]); p[6]=gc_axis((int8_t)f[9]);
-    p[7]=f[10]; p[8]=f[11];
+    p[7]=f[10]; p[8]=f[11]; /* analog triggers unchanged */
 }
 #endif
